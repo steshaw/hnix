@@ -4,128 +4,134 @@ import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad hiding (mapM, sequence)
 import           Data.Foldable (foldl')
+import           Data.Functor.Compose
 import qualified Data.Map as Map
+import           Data.Maybe
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Data.Traversable as T
 import           Nix.Types
 import           Prelude hiding (mapM, sequence)
 
-buildArgument :: Formals NValue -> NValue -> NValue
-buildArgument paramSpec arg = either error (Fix . NVSet) $ case paramSpec of
+buildArgument :: Formals NThunk -> NThunk -> IO (Map.Map Text NThunk)
+buildArgument paramSpec arg = case paramSpec of
     FormalName name -> return $ Map.singleton name arg
     FormalSet s -> lookupParamSet s
     FormalLeftAt name s -> Map.insert name arg <$> lookupParamSet s
     FormalRightAt s name -> Map.insert name arg <$> lookupParamSet s
   where
-    go env k def = maybe (Left err) return $ Map.lookup k env <|> def
+    go env k def = maybe (Left err) Right $ Map.lookup k env <|> def
       where err = "Could not find " ++ show k
 
-    lookupParamSet (FormalParamSet s) = case arg of
-      Fix (NVSet env) -> Map.traverseWithKey (go env) s
-      _               -> Left "Unexpected function environment"
+    lookupParamSet :: FormalParamSet NThunk -> IO (Map.Map Text NThunk)
+    lookupParamSet (FormalParamSet s) = do
+      arg' <- whnf arg
+      case arg' of
+        NVSet args -> either error return $ Map.traverseWithKey (go args) s
+        a          -> error $ "Value is a " ++ valueType a ++ " while a set was expected"
 
-evalExpr :: NExpr -> NValue -> IO NValue
+evalExpr :: NExpr -> Map.Map Text NThunk -> NThunk
 evalExpr = cata phi
   where
-    phi :: NExprF (NValue -> IO NValue) -> NValue -> IO NValue
-    phi (NSym var) = \env -> case env of
-      Fix (NVSet s) -> maybe err return $ Map.lookup var s
-      _ -> error "invalid evaluation environment"
-     where err = error ("Undefined variable: " ++ show var)
-    phi (NConstant x) = const $ return $ Fix $ NVConstant x
-    phi (NStr str) = fmap (Fix . NVStr) . flip evalString str
+    phi :: NExprF (Map.Map Text NThunk -> NThunk) -> Map.Map Text NThunk -> NThunk
+    phi (NSym var)
+      = fromMaybe (error ("Undefined variable: " ++ show var)) . Map.lookup var
+    phi (NConstant x) = const $ delayPure $ Fix $ NVConstant x
+    phi (NStr str) = delay . fmap (Fix . NVStr) . flip evalString str
     phi (NOper _x) = error "Operators are not yet defined"
     phi (NSelect _x _attr _or) = error "Select expressions are not yet supported"
     phi (NHasAttr _x _attr) = error "Has attr expressions are not yet supported"
 
-    phi (NList l)     = \env ->
-        Fix . NVList <$> mapM ($ env) l
-
-    -- TODO: recursive sets
-    phi (NSet _b binds)   = \env ->
-        Fix . NVSet <$> evalBinds True env binds
-
-    -- TODO: recursive binding
-    phi (NLet binds e) = \env -> case env of
-      (Fix (NVSet env')) -> do
-        letenv <- evalBinds False env binds
-        let newenv = Map.union letenv env'
-        e . Fix . NVSet $ newenv
-      _ -> error "invalid evaluation environment"
-
-    phi (NIf cond t f)  = \env -> do
-      (Fix cval) <- cond env
+    phi (NList l) = Fix . Compose . return . NVList . sequenceA l
+    phi (NSet b binds) = \env -> Fix . Compose . fmap NVSet $ evalBinds True b env binds
+    phi (NLet binds e) = \env -> Fix . Compose $
+      whnf . e . (`Map.union` env) =<< evalBinds False Rec env binds
+    phi (NIf cond t f) = \env -> Fix . Compose $ do
+      cval <- whnf $ cond env
       case cval of
-        NVConstant (NBool True) -> t env
-        NVConstant (NBool False) -> f env
-        _ -> error "condition must be a boolean"
+        NVConstant (NBool True) -> whnf $ t env
+        NVConstant (NBool False) -> whnf $ f env
+        x -> error $ "value is a " ++ valueType x ++ " while a boolean was expected"
 
-    phi (NWith scope e) = \env -> case env of
-      (Fix (NVSet env')) -> do
-        s <- scope env
-        case s of
-          (Fix (NVSet scope')) -> e . Fix . NVSet $ Map.union scope' env'
-          _ -> error "scope must be a set in with statement"
-      _ -> error "invalid evaluation environment"
+    phi (NWith scope e) = \env -> Fix . Compose $ do
+      s <- whnf $ scope env
+      case s of
+        (NVSet scope') -> whnf $ e $ Map.union scope' env
+        x -> error $ "value is a " ++ valueType x ++ " while a set was expected"
 
-    phi (NAssert cond e) = \env -> do
-      (Fix cond') <- cond env
+    phi (NAssert cond e) = \env -> Fix . Compose $ do
+      cond' <- whnf $ cond env
       case cond' of
-        (NVConstant (NBool True)) -> e env
-        (NVConstant (NBool False)) -> error "assertion failed"
-        _ -> error "assertion condition must be boolean"
+        NVConstant (NBool True) -> whnf $ e env
+        NVConstant (NBool False) -> error "assertion failed"
+        x -> error $ "value is a " ++ valueType x ++ " while a boolean was expected"
 
-    phi (NApp fun x) = \env -> do
-        fun' <- fun env
-        case fun' of
-            Fix (NVFunction argset f) -> do
-                arg <- x env
-                let arg' = buildArgument argset arg
-                f arg'
-            _ -> error "Attempt to call non-function"
+    phi (NApp fun x) = \env -> Fix . Compose $ do
+      fun' <- whnf $ fun env
+      case fun' of
+        NVFunction argset f -> whnf . f =<< buildArgument argset (x env)
+        _ -> error "Attempt to call non-function"
 
-    phi (NAbs a b)    = \env -> do
-        -- jww (2014-06-28): arglists should not receive the current
-        -- environment, but rather should recursively view their own arg
-        -- set
-        args <- traverse ($ env) a
-        return $ Fix $ NVFunction args b
+    phi (NAbs a b) = \env -> Fix . Compose . return $ NVFunction (fmap ($ env) a) $
+      b . (`Map.union` env)
 
-evalString :: NValue -> NString (NValue -> IO NValue) -> IO Text
+evalString :: Map.Map Text NThunk -> NString (Map.Map Text NThunk -> NThunk) -> IO Text
 evalString env (NString _ parts)
-  = Text.concat <$> mapM (runAntiquoted return (fmap valueText . ($ env))) parts
-evalString env (NUri t) = return t
+  = Text.concat <$> mapM (runAntiquoted return (thunkText . ($ env))) parts
+evalString _ (NUri t) = return t
 
-evalBinds :: Bool -> NValue -> [Binding (NValue -> IO NValue)] ->
-  IO (Map.Map Text NValue)
-evalBinds allowDynamic env xs = buildResult <$> sequence (concatMap go xs) where
-  buildResult :: [([Text], NValue)] -> Map.Map Text NValue
-  buildResult = foldl' insert Map.empty . map (first reverse) where
-    insert _ ([], _) = error "invalid selector with no components"
-    insert m (p:ps, v) = modifyPath ps (insertIfNotMember p v) where
-      alreadyDefinedErr = error $ "attribute " ++ attr ++ " already defined"
-      attr = show $ Text.intercalate "." $ reverse (p:ps)
+thunkText :: NThunk -> IO Text
+thunkText t = flip fmap (whnf t) $ \v -> case v of
+  NVConstant a -> atomText a
+  NVStr text   -> text
+  x            -> error $ "Cannot coerce " ++ valueType x ++ " to a string"
 
-      modifyPath :: [Text] -> (Map.Map Text NValue -> Map.Map Text NValue) -> Map.Map Text NValue
-      modifyPath [] f = f m
-      modifyPath (x:parts) f = modifyPath parts $ \m' -> case Map.lookup x m' of
-        Nothing                -> Map.singleton x $ g Map.empty
-        Just (Fix (NVSet m'')) -> Map.insert x (g m'') m'
+data BindValue = BindSet   (Map.Map Text BindValue)
+               | BindThunk NThunk
+
+bindValueToThunk :: BindValue -> NThunk
+bindValueToThunk (BindSet attrs) = Fix . Compose . return $ NVSet $
+  fmap bindValueToThunk attrs
+bindValueToThunk (BindThunk thunk) = thunk
+
+bindValue :: Map.Map Text BindValue -> [Text] -> NThunk -> Map.Map Text BindValue
+bindValue _ [] _ = error "invalid selector with no components"
+bindValue m (p:ps) v = modifyPath ps (insertIfNotMember p $ BindThunk v) where
+  alreadyDefinedErr = error $ "attribute " ++ attr ++ " already defined"
+  attr = show $ Text.intercalate "." $ reverse (p:ps)
+
+  modifyPath [] f = f m
+  modifyPath (key:rest) f = modifyPath rest $ \parent -> case Map.lookup key parent of
+        Nothing                -> Map.insert key (BindSet $ f Map.empty) parent
+        Just (BindSet current) -> Map.insert key (BindSet $ f current)   parent
         Just _                 -> alreadyDefinedErr
-       where g = Fix . NVSet . f
 
-      insertIfNotMember k x m'
-        | Map.notMember k m' = Map.insert k x m'
-        | otherwise = alreadyDefinedErr
+  insertIfNotMember k x m'
+    | Map.notMember k m' = Map.insert k x m'
+    | otherwise = alreadyDefinedErr
+
+evalBinds :: Bool
+          -> NSetBind
+          -> Map.Map Text NThunk
+          -> [Binding (Map.Map Text NThunk -> NThunk)]
+          -> IO (Map.Map Text NThunk)
+evalBinds allowDynamic kind env xs = buildResult <$> sequence (concatMap go xs) where
+  buildResult :: [([Text], Map.Map Text NThunk -> NThunk)] -> Map.Map Text NThunk
+  buildResult binds = result where
+    result :: Map.Map Text NThunk
+    result = fmap bindValueToThunk . buildMap . map (reverse *** ($ result)) $ binds
+    buildMap = foldl' (uncurry . bindValue) Map.empty
 
   -- TODO: Inherit
-  go :: Binding (NValue -> IO NValue) -> [IO ([Text], NValue)]
-  go (NamedVar x y) = [liftM2 (,) (evalSelector allowDynamic env x) (y env)]
+  go :: Binding (Map.Map Text NThunk -> NThunk) -> [IO ([Text], Map.Map Text NThunk -> NThunk)]
+  go (NamedVar x y) = [fmap (, f) (evalSelector x)] where
+    f = case kind of
+      Rec    -> \self -> y (Map.union self env)
+      NonRec -> \_    -> y env
 
-  evalSelector :: Bool -> NValue -> NSelector (NValue -> IO NValue) -> IO [Text]
-  evalSelector dyn e = mapM evalKeyName where
+  evalSelector :: NSelector (Map.Map Text NThunk -> NThunk) -> IO [Text]
+  evalSelector = mapM evalKeyName where
     evalKeyName (StaticKey k) = return k
     evalKeyName (DynamicKey k)
-      | dyn       = runAntiquoted (evalString e) (fmap valueText . ($ e)) k
-      | otherwise = error "dynamic attribute not allowed in this context"
+      | allowDynamic = runAntiquoted (evalString env) (thunkText . ($ env)) k
+      | otherwise    = error "dynamic attribute not allowed in this context"

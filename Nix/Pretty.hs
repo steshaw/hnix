@@ -1,8 +1,11 @@
 module Nix.Pretty where
 
+import Control.Monad
+import Data.Functor.Compose
 import Data.Map (toList)
 import Data.Maybe (isJust)
 import Data.Text (Text, unpack, replace, strip)
+import Data.Traversable (sequenceA)
 import Nix.Types
 import Text.PrettyPrint.ANSI.Leijen
 
@@ -108,13 +111,13 @@ prettyOper (NUnary op r1) =
   NixDoc (text (operatorName opInfo) <> wrapParens opInfo r1) opInfo
  where opInfo = getUnaryOperator op
 
-prettyAtom :: NAtom -> NixDoc
-prettyAtom atom = simpleExpr $ text $ unpack $ atomText atom
+prettyAtom :: NAtom -> Doc
+prettyAtom atom = text $ unpack $ atomText atom
 
 prettyNix :: NExpr -> Doc
 prettyNix = withoutParens . cata phi where
   phi :: NExprF NixDoc -> NixDoc
-  phi (NConstant atom) = prettyAtom atom
+  phi (NConstant atom) = simpleExpr $ prettyAtom atom
   phi (NStr str) = simpleExpr $ prettyString str
   phi (NList xs) = simpleExpr $ group $
     nest 2 (vsep $ lbracket : map (wrapParens appOpNonAssoc) xs) <$> rbracket
@@ -147,3 +150,17 @@ prettyNix = withoutParens . cata phi where
     text "with"  <+> withoutParens scope <> semi <+> withoutParens body
   phi (NAssert cond body) = leastPrecedence $
     text "assert" <+> withoutParens cond <> semi <+> withoutParens body
+
+prettyThunk :: NThunk -> IO Doc
+prettyThunk = cata (getCompose >=> phi) where
+  phi :: NValueF (IO Doc) -> IO Doc
+  phi (NVConstant atom) = return $ prettyAtom atom
+  phi (NVStr t) = return $ dquotes $ text $ unpack t
+  phi (NVList ls) = do
+    ls' <- sequenceA ls
+    return $ align $ lbracket <+> fillSep ls' <+> rbracket
+  phi (NVSet args) = do
+    args' <- sequenceA args
+    return $ group $ nest 2 (vsep (lbrace : map f (toList args'))) <$> rbrace
+   where f (key,val) = text (unpack key) <+> equals <+> val <> semi
+  phi (NVFunction _ _) = return $ text "<lambda>"

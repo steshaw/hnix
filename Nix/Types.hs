@@ -12,6 +12,7 @@ module Nix.Types where
 import           Control.Applicative
 import           Control.Monad hiding (forM_, mapM, sequence)
 import           Data.Data
+import           Data.Functor.Compose
 import           Data.Foldable
 import           Data.List (intercalate)
 import           Data.Map (Map)
@@ -59,6 +60,12 @@ atomText NNull     = "null"
 atomText (NPath s p)
   | s = pack ("<" ++ p ++ ">")
   | otherwise = pack p
+
+atomType :: NAtom -> String
+atomType (NInt _) = "integer"
+atomType (NBool _) = "boolean"
+atomType NNull = "null"
+atomType (NPath _ _) = "path"
 
 -- | 'Antiquoted' represents an expression that is either
 -- antiquoted (surrounded by ${...}) or plain (not antiquoted).
@@ -367,8 +374,22 @@ data NValueF r
     | NVStr Text
     | NVList [r]
     | NVSet (Map Text r)
-    | NVFunction (Formals r) (NValue -> IO r)
+    | NVFunction (Formals r) (Map Text NThunk -> r)
     deriving (Generic, Typeable, Functor)
+
+-- | An 'NThunk' represents a value that is not evaluated yet and where
+-- the childrens are also not evaluated.
+type NThunk = Fix (Compose IO NValueF)
+
+-- | Evaluate the outermost layer of a thunk.
+whnf :: NThunk -> IO (NValueF NThunk)
+whnf = getCompose . outF
+
+delay :: IO NValue -> NThunk
+delay = Fix . Compose . fmap (fmap delayPure . outF)
+
+delayPure :: NValue -> NThunk
+delayPure = Fix . Compose . return . fmap delayPure . outF
 
 instance Show f => Show (NValueF f) where
     showsPrec = flip go where
@@ -376,7 +397,7 @@ instance Show f => Show (NValueF f) where
       go (NVStr      text) = showsCon1 "NVStr"      text
       go (NVList     list) = showsCon1 "NVList"     list
       go (NVSet     attrs) = showsCon1 "NVSet"      attrs
-      go (NVFunction r _)  = showsCon1 "NVFunction" r
+      go (NVFunction r _)  = showsCon1 "NVFunction" $ ("<thunk>" :: String) <$ r
 
       showsCon1 :: Show a => String -> a -> Int -> String -> String
       showsCon1 con a d = showParen (d > 10) $ showString (con ++ " ") . showsPrec 11 a
@@ -391,3 +412,10 @@ valueText = cata phi where
     phi (NVList _)       = error "Cannot coerce a list to a string"
     phi (NVSet _)        = error "Cannot coerce a set to a string"
     phi (NVFunction _ _) = error "Cannot coerce a function to a string"
+
+valueType :: NValueF a -> String
+valueType (NVConstant a) = atomType a
+valueType (NVStr _) = "string"
+valueType (NVList _) = "list"
+valueType (NVSet _) = "set"
+valueType (NVFunction _ _) = "function"

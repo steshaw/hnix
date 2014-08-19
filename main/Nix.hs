@@ -5,7 +5,8 @@ import Nix.Pretty
 import Nix.Eval
 import Nix.Types
 
-import Text.PrettyPrint.ANSI.Leijen
+import Data.Monoid
+import Text.PrettyPrint.ANSI.Leijen hiding ((<>))
 import System.Environment
 import System.IO
 
@@ -17,9 +18,9 @@ nix path = do
   case res of
     Failure e -> hPutStrLn stderr $ "Parse failed: " ++ show e
     Success n -> do
-      displayIO stdout $ renderPretty 0.4 80 (prettyNix n)
-      putStrLn ""
-      evalExpr n (Fix $ NVSet Map.empty) >>= print
+      displayIO stdout $ renderPretty 0.4 80 (prettyNix n <> hardline)
+      top <- prettyThunk (evalExpr n Map.empty)
+      displayIO stdout . renderPretty 0.4 80 $ top <> hardline
 
 main :: IO ()
 main = do
