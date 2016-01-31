@@ -40,9 +40,6 @@ nixExpr = whiteSpace *> (nixToplevelForm <|> foldl' makeParser nixTerm nixOperat
 antiStart :: Parser String
 antiStart = try (string "${") <?> show ("${" :: String)
 
-nixAntiquoted :: Parser a -> Parser (Antiquoted a NExpr)
-nixAntiquoted p = Antiquoted <$> (antiStart *> nixExpr <* symbolic '}') <|> Plain <$> p
-
 selDot :: Parser ()
 selDot = try (char '.' *> notFollowedBy (("path" :: String) <$ nixPath)) *> whiteSpace
       <?> "."
@@ -153,35 +150,42 @@ nixUri = token $ fmap (mkUri . pack) $ (++)
  where
   scheme = (:) <$> letter <*> many (alphaNum <|> oneOf "+-.")
 
-nixString :: Parser (NString NExpr)
-nixString = doubleQuoted <|> indented <?> "string"
+doubleQuotedString :: Parser [Antiquoted NExpr]
+doubleQuotedString = removePlainEmpty . mergePlain <$>
+  (doubleQ *> many (stringChar doubleQ (void $ char '\\') doubleEscape)
+          <* token doubleQ)
+  <?> "double quoted string"
   where
-    doubleQuoted = DoubleQuoted . removePlainEmpty . mergePlain
-                <$> (doubleQ *> many (stringChar doubleQ (void $ char '\\') doubleEscape)
-                             <* token doubleQ)
-                <?> "double quoted string"
-
     doubleQ = void $ char '"'
     doubleEscape = Plain . singleton <$> (char '\\' *> escapeCode)
 
-    indented = stripIndent
-            <$> (indentedQ *> many (stringChar indentedQ indentedQ indentedEscape)
-                           <* token indentedQ)
-            <?> "indented string"
+stringChar :: Parser () -> Parser () ->
+              Parser (Antiquoted NExpr) -> Parser (Antiquoted NExpr)
+stringChar end escStart esc = esc
+  <|> Antiquoted <$> (antiStart *> nixExpr <* char '}') -- don't skip trailing space
+  <|> Plain . singleton <$> char '$'
+  <|> Plain . pack <$> some plainChar
+  where
+    plainChar =
+      notFollowedBy (end <|> void (char '$') <|> escStart) *> anyChar
 
+escapeCode :: Parser Char
+escapeCode = choice [ c <$ char e | (c,e) <- escapeCodes ] <|> anyChar
+
+indentedString :: Parser (NString NExpr)
+indentedString = stripIndent
+  <$> (indentedQ *> many (stringChar indentedQ indentedQ indentedEscape)
+                           <* token indentedQ)
+  <?> "indented string"
+  where
     indentedQ = void $ try (string "''") <?> "\"''\""
     indentedEscape = fmap Plain
               $  try (indentedQ *> char '\\') *> fmap singleton escapeCode
              <|> try (indentedQ *> ("''" <$ char '\'' <|> "$"  <$ char '$'))
 
-    stringChar end escStart esc
-       =  esc
-      <|> Antiquoted <$> (antiStart *> nixExpr <* char '}') -- don't skip trailing space
-      <|> Plain . singleton <$> char '$'
-      <|> Plain . pack <$> some plainChar
-     where plainChar = notFollowedBy (end <|> void (char '$') <|> escStart) *> anyChar
-
-    escapeCode = choice [ c <$ char e | (c,e) <- escapeCodes ] <|> anyChar
+nixString :: Parser (NString NExpr)
+nixString = DoubleQuoted <$> doubleQuotedString <|> indentedString
+            <?> "string"
 
 -- | Gets all of the arguments for a function.
 argExpr :: Parser (Params NExpr)
@@ -238,9 +242,20 @@ nixBinders = (inherit <|> namedVar) `endBy` symbolic ';' where
   scope = parens nixExpr <?> "inherit scope"
 
 keyName :: Parser (NKeyName NExpr)
-keyName = dynamicKey <|> staticKey where
-  staticKey = StaticKey <$> identifier
-  dynamicKey = DynamicKey <$> nixAntiquoted nixString
+keyName = dynamicKey <|> antiquoted <|> staticKey where
+  -- The simplest case: a bare identifier, like `.foo`
+  staticKey = Plain <$> identifier
+  -- An expression, like `.${foo + bar}`
+  antiquoted = Antiquoted <$> (antiStart *> nixExpr <* symbolic '}')
+  -- A string wrapped in quotes, possibly containing antiquoted expressions.
+  dynamicKey = doubleQuotedString >>= \case
+    -- If we only parse a single string element, simplify things by just
+    -- returning that rather than wrapping it in an antiquoted. This catches
+    -- things like `."foo"` and turns them into the same as `.foo`.
+    [s] -> return s
+    -- If we get no elements back, treat this as an empty string.
+    [] -> return $ Plain ""
+    stuff -> return $ Antiquoted $ Fix $ NStr $ DoubleQuoted stuff
 
 nixSet :: Parser NExpr
 nixSet = Fix <$> (isRec <*> braces nixBinders) <?> "set" where

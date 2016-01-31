@@ -58,10 +58,11 @@ wrapParens op sub
 
 prettyString :: NString NixDoc -> Doc
 prettyString (DoubleQuoted parts) = dquotes . hcat . map prettyPart $ parts
-  where prettyPart (Plain t)      = text . concatMap escape . unpack $ t
-        prettyPart (Antiquoted r) = text "$" <> braces (withoutParens r)
-        escape '"' = "\\\""
-        escape x = maybe [x] (('\\':) . (:[])) $ toEscapeCode x
+  where
+    prettyPart (Plain t)      = text . concatMap escape . unpack $ t
+    prettyPart (Antiquoted r) = text "$" <> braces (withoutParens r)
+    escape '"' = "\\\""
+    escape x = maybe [x] (('\\':) . (:[])) $ toEscapeCode x
 prettyString (Indented parts)
   = group $ nest 2 (squote <> squote <$$> content) <$$> squote <> squote
  where
@@ -70,7 +71,8 @@ prettyString (Indented parts)
     f ([Plain t] : xs) | Text.null (strip t) = xs
     f xs = xs
   prettyLine = hcat . map prettyPart
-  prettyPart (Plain t) = text . unpack . replace "$" "''$" . replace "''" "'''" $ t
+  prettyPart (Plain t) =
+    text . unpack . replace "${" "''${" . replace "''" "'''" $ t
   prettyPart (Antiquoted r) = text "$" <> braces (withoutParens r)
 
 prettyParams :: Params NixDoc -> Doc
@@ -98,10 +100,10 @@ prettyBind (Inherit s ns)
  where scope = maybe empty ((<> space) . parens . withoutParens) s
 
 prettyKeyName :: NKeyName NixDoc -> Doc
-prettyKeyName (StaticKey key)
+prettyKeyName (Plain key)
   | HashSet.member (unpack key) reservedNames = dquotes $ text $ unpack key
-prettyKeyName (StaticKey key) = text . unpack $ key
-prettyKeyName (DynamicKey key) = runAntiquoted prettyString withoutParens key
+prettyKeyName (Plain key) = text . unpack $ key
+prettyKeyName (Antiquoted expr) = text "$" <> braces (withoutParens expr)
 
 prettySelector :: NAttrPath NixDoc -> Doc
 prettySelector = hcat . punctuate dot . map prettyKeyName

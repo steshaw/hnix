@@ -4,32 +4,26 @@ module Nix.StringOperations where
 import Nix.Expr
 import           Data.List (intercalate)
 import           Data.Monoid ((<>))
-import           Data.Text (Text)
 import qualified Data.Text as T
 import           Prelude hiding (elem)
 import           Data.Tuple (swap)
 
 
 -- | Merge adjacent 'Plain' values with 'mappend'.
-mergePlain :: Monoid v => [Antiquoted v r] -> [Antiquoted v r]
+mergePlain :: [Antiquoted r] -> [Antiquoted r]
 mergePlain [] = []
 mergePlain (Plain a: Plain b: xs) = mergePlain (Plain (a <> b) : xs)
 mergePlain (x:xs) = x : mergePlain xs
 
 -- | Remove 'Plain' values equal to 'mempty', as they don't have any
 -- informational content.
-removePlainEmpty :: (Eq v, Monoid v) => [Antiquoted v r] -> [Antiquoted v r]
+removePlainEmpty :: [Antiquoted r] -> [Antiquoted r]
 removePlainEmpty = filter f where
   f (Plain x) = x /= mempty
   f _ = True
 
--- | Equivalent to case splitting on 'Antiquoted' strings.
-runAntiquoted :: (v -> a) -> (r -> a) -> Antiquoted v r -> a
-runAntiquoted f _ (Plain v) = f v
-runAntiquoted _ f (Antiquoted r) = f r
-
 -- | Split a stream representing a string with antiquotes on line breaks.
-splitLines :: [Antiquoted Text r] -> [[Antiquoted Text r]]
+splitLines :: [Antiquoted r] -> [[Antiquoted r]]
 splitLines = uncurry (flip (:)) . go where
   go (Plain t : xs) = (Plain l :) <$> foldr f (go xs) ls where
     (l : ls) = T.split (=='\n') t
@@ -39,11 +33,11 @@ splitLines = uncurry (flip (:)) . go where
 
 -- | Join a stream of strings containing antiquotes again. This is the inverse
 -- of 'splitLines'.
-unsplitLines :: [[Antiquoted Text r]] -> [Antiquoted Text r]
+unsplitLines :: [[Antiquoted r]] -> [Antiquoted r]
 unsplitLines = intercalate [Plain "\n"]
 
 -- | Form an indented string by stripping spaces equal to the minimal indent.
-stripIndent :: [Antiquoted Text r] -> NString r
+stripIndent :: [Antiquoted r] -> NString r
 stripIndent [] = Indented []
 stripIndent xs =
   Indented . removePlainEmpty . mergePlain . unsplitLines $ ls'

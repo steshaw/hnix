@@ -112,19 +112,24 @@ data ParamSet r
   deriving (Ord, Eq, Generic, Typeable, Data, Functor, Show,
             Foldable, Traversable)
 
--- | 'Antiquoted' represents an expression that is either
--- antiquoted (surrounded by ${...}) or plain (not antiquoted).
-data Antiquoted v r = Plain !v | Antiquoted !r
+-- | 'Antiquoted' represents either a plain string (just text), or an
+-- antiquoted expression (surrounded by ${...})
+data Antiquoted r
+  = Plain !Text
+  | Antiquoted !r
   deriving (Ord, Eq, Generic, Typeable, Data, Functor, Show)
+
+instance IsString (Antiquoted r) where
+  fromString = Plain . fromString
 
 -- | An 'NString' is a list of things that are either a plain string
 -- or an antiquoted expression. After the antiquotes have been evaluated,
 -- the final string is constructed by concating all the parts.
 data NString r
-  = DoubleQuoted ![Antiquoted Text r]
+  = DoubleQuoted ![Antiquoted r]
   -- ^ Strings wrapped with double-quotes (") are not allowed to contain
   -- literal newline characters.
-  | Indented ![Antiquoted Text r]
+  | Indented ![Antiquoted r]
   -- ^ Strings wrapped with two single quotes ('') can contain newlines,
   -- and their indentation will be stripped.
   deriving (Eq, Ord, Generic, Typeable, Data, Functor, Show)
@@ -134,40 +139,8 @@ instance IsString (NString r) where
   fromString "" = DoubleQuoted []
   fromString string = DoubleQuoted [Plain $ pack string]
 
--- | A 'KeyName' is something that can appear at the right side of an
--- equals sign. For example, @a@ is a 'KeyName' in @{ a = 3; }@, @let a = 3;
--- in ...@, @{}.a@ or @{} ? a@.
---
--- Nix supports both static keynames (just an identifier) and dynamic
--- identifiers. Dynamic identifiers can be either a string (e.g.:
--- @{ "a" = 3; }@) or an antiquotation (e.g.: @let a = "example";
--- in { ${a} = 3; }.example@).
---
--- Note: There are some places where a dynamic keyname is not allowed.
--- In particular, those include:
---
---   * The RHS of a @binding@ inside @let@: @let ${"a"} = 3; in ...@
---     produces a syntax error.
---   * The attribute names of an 'inherit': @inherit ${"a"};@ is forbidden.
---
--- Note: In Nix, a simple string without antiquotes such as @"foo"@ is
--- allowed even if the context requires a static keyname, but the
--- parser still considers it a 'DynamicKey' for simplicity.
-data NKeyName r
-  = DynamicKey !(Antiquoted (NString r) r)
-  | StaticKey !Text
-  deriving (Eq, Ord, Generic, Typeable, Data, Show)
-
--- | Most key names are just static text, so this instance is convenient.
-instance IsString (NKeyName r) where
-  fromString = StaticKey . fromString
-
--- | Deriving this instance automatically is not possible because @r@
--- occurs not only as last argument in @Antiquoted (NString r) r@
-instance Functor NKeyName where
-  fmap f (DynamicKey (Plain str)) = DynamicKey . Plain $ fmap f str
-  fmap f (DynamicKey (Antiquoted e)) = DynamicKey . Antiquoted $ f e
-  fmap _ (StaticKey key) = StaticKey key
+-- | We can represent key names by antiquoted strings.
+type NKeyName = Antiquoted
 
 -- | A selector (for example in a @let@ or an attribute set) is made up
 -- of strung-together key names.

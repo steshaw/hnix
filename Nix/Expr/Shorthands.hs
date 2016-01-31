@@ -47,7 +47,7 @@ mkSym :: Text -> NExpr
 mkSym = Fix . NSym
 
 mkSelector :: Text -> NAttrPath NExpr
-mkSelector = (:[]) . StaticKey
+mkSelector = (:[]) . Plain
 
 mkBool :: Bool -> NExpr
 mkBool = Fix . NConstant . NBool
@@ -76,8 +76,8 @@ mkApp e = Fix . NApp e
 mkRecSet :: [Binding NExpr] -> NExpr
 mkRecSet = Fix . NRecSet
 
-mkNonRecSet :: [Binding NExpr] -> NExpr
-mkNonRecSet = Fix . NSet
+mkSet :: [Binding NExpr] -> NExpr
+mkSet = Fix . NSet
 
 mkLets :: [Binding NExpr] -> NExpr -> NExpr
 mkLets bindings = Fix . NLet bindings
@@ -98,7 +98,13 @@ mkFunction :: Params NExpr -> NExpr -> NExpr
 mkFunction params = Fix . NAbs params
 
 mkDot :: NExpr -> Text -> NExpr
-mkDot e key = Fix $ NSelect e [StaticKey key] Nothing
+mkDot e key = Fix $ NSelect e [Plain key] Nothing
+
+mkDots :: NExpr -> [Text] -> NExpr
+mkDots e keys = Fix $ NSelect e (map Plain keys) Nothing
+
+mkDotsDef :: NExpr -> [Text] -> NExpr -> NExpr
+mkDotsDef e keys def = Fix $ NSelect e (map Plain keys) $ Just def
 
 -- | An `inherit` clause without an expression to pull from.
 inherit :: [NKeyName e] -> Binding e

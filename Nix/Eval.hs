@@ -16,7 +16,7 @@ import           Data.Traversable as T
 import           Data.Typeable (Typeable)
 import           GHC.Generics
 import           Nix.Pretty (atomText)
-import           Nix.StringOperations (runAntiquoted)
+import           Nix.StringOperations
 import           Nix.Atoms
 import           Nix.Expr
 import           Prelude hiding (mapM, sequence)
@@ -194,8 +194,10 @@ evalExpr = cata phi
 evalString :: Monad m
            => NValue m -> NString (NValue m -> m (NValue m)) -> m Text
 evalString env nstr = do
-  let fromParts parts = Text.concat <$>
-        mapM (runAntiquoted return (fmap valueText . ($ env))) parts
+  let fromPart = \case
+        Plain s -> return s
+        Antiquoted expr -> fmap valueText . ($ env) $ expr
+      fromParts parts = Text.concat <$> mapM fromPart parts
   case nstr of
     Indented parts -> fromParts parts
     DoubleQuoted parts -> fromParts parts
@@ -227,8 +229,7 @@ evalBinds allowDynamic env xs = buildResult <$> sequence (concatMap go xs) where
   go _ = [] -- HACK! But who cares right now
 
 evalSelector :: Monad m => Bool -> NValue m -> NAttrPath (NValue m -> m (NValue m)) -> m [Text]
-evalSelector dyn env = mapM evalKeyName where
-  evalKeyName (StaticKey k) = return k
-  evalKeyName (DynamicKey k)
-    | dyn       = runAntiquoted (evalString env) (fmap valueText . ($ env)) k
-    | otherwise = error "dynamic attribute not allowed in this context"
+evalSelector _ _ = mapM evalKeyName where
+  evalKeyName (Plain key) = return key
+  evalKeyName (Antiquoted _) = error "Dynamic keys not evaluated yet"
+
