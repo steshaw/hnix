@@ -26,7 +26,17 @@ import qualified Data.HashSet as HashSet
 #if USE_PARSEC
 import qualified Text.Parsec as Parsec
 import qualified Text.Parsec.Text as Parsec
+import qualified Text.Parsec.Prim as Parsec
 import qualified Data.Text.IO as T
+
+import qualified Text.Trifecta as Trifecta
+import qualified Text.Trifecta.Delta as Trifecta
+
+import qualified Text.Parsec.Free as F
+import qualified Text.Parsec.Free.Eval as F
+import qualified Text.Parsec.Free.Log as F
+import           Control.Monad.Trans.Reader (ReaderT(..))
+
 #else
 import qualified Text.Trifecta as Trifecta
 import qualified Text.Trifecta.Delta as Trifecta
@@ -106,8 +116,8 @@ someTill p end = go
     scan = (end *> pure []) <|>  go
 
 --------------------------------------------------------------------------------
-parseFromFileEx :: MonadIO m => Parser a -> FilePath -> m (Result a)
-parseFromString :: Parser a -> String -> Result a
+--parseFromFileEx :: MonadIO m => Parser a -> FilePath -> m (Result a)
+--parseFromString :: Parser a -> String -> Result a
 position :: Parser Trifecta.Delta
 
 #if USE_PARSEC
@@ -115,15 +125,23 @@ data Result a = Success a
               | Failure Doc
   deriving Show
 
-type Parser = NixParser Parsec.Parser
+type Parser = NixParser (Parsec.ParsecT Text () (ReaderT F.LogType IO))
 
+{-
 parseFromFileEx p path =
     (either (Failure . text . show) Success . Parsec.parse (runNixParser p) path)
         `liftM` liftIO (T.readFile path)
 
 parseFromString p = either (Failure . text . show) Success . Parsec.parse (runNixParser p) "<string>" . pack
+-}
 
-position = error "position not implemented for Parsec parser"
+parseFile :: Show a => Parser a -> String -> IO ()
+parseFile p path = do
+  input <- T.readFile path
+  Parsec.parseTestLog False (runNixParser p) input
+
+-- position = error "position not implemented for Parsec parser"
+position = return $ Trifecta.Directed "<not-supported-with-parsec>" 0 0 0 0
 
 #else
 

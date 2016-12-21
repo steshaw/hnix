@@ -64,7 +64,7 @@ Library
     , semigroups >= 0.18 && < 0.19
   if flag(parsec)
     Cpp-options: -DUSE_PARSEC
-    Build-depends: parsec
+    Build-depends: trifecta, parsec-free
   else
     Build-depends: trifecta
   ghc-options: -Wall -fno-warn-name-shadowing

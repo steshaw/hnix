@@ -1,13 +1,12 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE OverloadedStrings #-}
-
 module Nix.Parser (
   parseNixFile,
+{-
   parseNixFileLoc,
   parseNixString,
   parseNixStringLoc,
   parseNixText,
   parseNixTextLoc,
+--}
   Result(..)
   ) where
 
@@ -22,6 +21,29 @@ import           Nix.Parser.Operators
 import           Nix.Expr
 import           Nix.StringOperations
 import           Prelude hiding (elem)
+
+import qualified Text.Parsec.Free as P
+import qualified Text.Parsec as Parsec
+
+--------------------------------------------------------------------------------
+
+instance Parsec.Stream s m Char => CharParsing (P.ParsecDSL s u m) where
+  satisfy   = Parsec.satisfy
+  char      = Parsec.char
+  notChar c = Parsec.satisfy (/= c)
+  anyChar   = Parsec.anyChar
+  string    = Parsec.string
+
+instance Parsec.Stream s m Char => TokenParsing (P.ParsecDSL s u m)
+
+instance (Parsec.Stream s m Char) => Parsing (P.ParsecDSL s u m) where
+  try           = Parsec.try
+  (<?>)         = (Parsec.<?>)
+  skipMany      = Parsec.skipMany
+  skipSome      = Parsec.skipMany1
+  unexpected    = Parsec.unexpected
+  eof           = Parsec.eof
+  notFollowedBy = Parsec.notFollowedBy
 
 --------------------------------------------------------------------------------
 
@@ -274,9 +296,10 @@ nixSet = annotateLocation1 $ (isRec <*> braces nixBinders) <?> "set" where
   isRec = (try (reserved "rec" *> pure NRecSet) <?> "recursive set")
        <|> pure NSet
 
-parseNixFile :: MonadIO m => FilePath -> m (Result NExpr)
-parseNixFile = parseFromFileEx $ nixExpr <* eof
+parseNixFile :: FilePath -> IO ()
+parseNixFile = parseFile $ nixExpr <* eof
 
+{-
 parseNixFileLoc :: MonadIO m => FilePath -> m (Result NExprLoc)
 parseNixFileLoc = parseFromFileEx $ nixExprLoc <* eof
 
@@ -291,3 +314,4 @@ parseNixText = parseNixString . unpack
 
 parseNixTextLoc :: Text -> Result NExprLoc
 parseNixTextLoc = parseNixStringLoc . unpack
+-}
